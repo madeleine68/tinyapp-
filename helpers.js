@@ -34,5 +34,30 @@ const userIdFromEmail = function(email, userDatabase) {
   }
 };
 
+// URL Parser
+// Checks if provided URL contains an "http://" prefix and adds one if not
+const urlParser = function(newLongURL) {
+  // Negative check - RegExp that checks if the URL does NOT have a scheme/protocol specified
+  const schemeNegCheck = /^([A-Za-z]+.)+[A-Z-a-z]+(\/?$|\/.+$)/;
+  // If a protocl prefix is absent, "http://" will be added
+  return schemeNegCheck.test(newLongURL) ? `http://${newLongURL}` : newLongURL;
+};
 
-module.exports = {userIdFromEmail ,getUserByEmail, generateRandomString, urlsForUser };
+const urlOwnership = function(userID, shortURL, database) {
+  return database[shortURL].userID === userID
+};
+
+const shortURLCheck = function(queryShortURL, sourceDatabase) {
+  // console.log('sourceDatabase', sourceDatabase)
+  for (const shortURL in sourceDatabase) {
+    // console.log('shortURL:', shortURL)
+    // console.log('queryShortURL:', queryShortURL)
+    if (shortURL !== queryShortURL) {
+      return false;
+    }
+  }
+  return true;
+};
+
+
+module.exports = {userIdFromEmail ,getUserByEmail, generateRandomString, urlsForUser, urlParser, urlOwnership, shortURLCheck };

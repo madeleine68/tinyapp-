@@ -5,7 +5,7 @@ const bodyParser = require("body-parser");
 //const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
 const cookieSession = require('cookie-session');
-const { userIdFromEmail, getUserByEmail, generateRandomString, urlsForUser } = require('./helpers');
+const { userIdFromEmail, getUserByEmail, generateRandomString, urlsForUser, urlParser, urlOwnership, shortURLCheck } = require('./helpers');
 
 
 // default port 8080
@@ -24,39 +24,54 @@ app.use(cookieSession({ name: 'session', keys: ['key1', 'key2']}))
 const urlDatabase = {};
 const users = {};
 
-//GET functions
+// Root directory for unkown user to /login or /urls for logged-in user
 app.get('/', (req, res) => {
   if (req.session.user_id) {
     res.redirect('/urls');
   } else {
+    //if there is no user_id
     res.redirect('/login');
   }
 });
 
+// My URLs
 app.get("/urls", (req, res) => {
-  let templateVars = {
-    urls: urlsForUser(req.session.user_id, urlDatabase),
-    user: users[req.session.user_id],
+  const userID = req.session.user_id;
+  if(!userID) {
+    res.status(401);
+  }
+  //List of user created URLs  generated based on user id
+  const templateVars = {
+    urls: urlsForUser(userID, urlDatabase),
+    user: users[userID]
   };
   res.render("urls_index", templateVars);
 });
 
+
+// Adding a new URL entry to db after user enters a new URL then redirect to /urls/${shortURL}
 app.post("/urls", (req, res) => {
   if (req.session.user_id) {
+    // A randomly generated string
     const shortURL = generateRandomString();
+    //urlParser append an http// prefix to the URL if neccessaryreq.body.longURL
+    const longURL = urlParser(req.body.longURL);
     urlDatabase[shortURL] = {
-      longURL: req.body.longURL,
-      userID: req.session.user_id,
+      longURL:longURL,
+      userID: req.session.user_id
     };
-    res.redirect(`/urls/${shortURL}`);
+    return res.redirect(`/urls/${shortURL}`);
   } else {
     res.status(401).send("You must be logged in to a valid account to create short URLs.");
   }
+  
 });
 
+//Creating a new short URL
 app.get("/urls/new", (req, res) => {
-  if (req.session.user_id) {
-    let templateVars = {user: users[req.session.user_id]};
+  const userID = req.session.user_id;
+  if (userID) {
+    const templateVars = {user: users[userID]};
     res.render('urls_new', templateVars);
   } else {
     res.redirect('/login');
@@ -64,34 +79,44 @@ app.get("/urls/new", (req, res) => {
 });
 
 app.get('/urls/:shortURL', (req, res) => {
-  const shortURL = req.params.shortURL;
   const userID = req.session.user_id;
-  const userUrls = urlsForUser(userID, urlDatabase);
-  let templateVars = { urlDatabase, userUrls, shortURL, user: users[userID] };
-
-  if (!urlDatabase[shortURL]) {
-    const errorMessage1 = 'This short URL does not exist.';
-    res.status(404).render(errorMessage1);
-  } else if (!userID || !userUrls[shortURL]) {
-    const errorMessage2 = 'You are not authorized to see this URL.';
-    res.status(401).render(errorMessage2);
-  } else {
-    res.render('urls_show', templateVars);
+  const shortURLparam = req.params.shortURL;
+  if (!userID) {
+    return res.redirect('/register');
   }
+  // If the requested short URL is NOT in the database
+  if (!urlDatabase[shortURLparam]) {
+    return res.send('Requested short URL is not in the database');
+  }
+  // If the requested short URL does NOT belong to the current user
+  
+  if (!urlOwnership(userID, shortURLparam, urlDatabase)) {
+    return res.send('You dont own this URL');
+  }
+  // Traffic stats and other info
+  const querylongURL = urlDatabase[shortURLparam].longURL;
+  const templateVars = {
+    user: userID,
+    shortURL: shortURLparam,
+    longURL:querylongURL,
+  };
+  res.render('urls_show', templateVars);
 });
 
+// update URL db after user edits existing one
 app.post('/urls/:shortURL', (req, res) => {
   const userID = req.session.user_id;
+  const shortURL = req.params.shortURL;
   const userUrls = urlsForUser(userID, urlDatabase);
   if (Object.keys(userUrls).includes(req.params.shortURL)) {
-    const shortURL = req.params.shortURL;
-    urlDatabase[shortURL].longURL = req.body.newURL;
+    urlDatabase[shortURL].longURL = req.body.updatedURL;
     res.redirect('/urls');
   } else {
     res.status(401).send("You do not have authorization to edit this short URL.");
   }
 });
 
+///Delete sn URL from db as per user request
 app.post('/urls/:shortURL/delete', (req, res) => {
   const userID = req.session.user_id;
   const userUrls = urlsForUser(userID, urlDatabase);
@@ -104,22 +129,26 @@ app.post('/urls/:shortURL/delete', (req, res) => {
   }
 });
 
+// redirect to the linked external url
 app.get('/u/:shortURL', (req, res) => {
-  if (urlDatabase[req.params.shortURL]) {
-    res.redirect(urlDatabase[req.params.shortURL].longURL);
+  const shortURL = req.params.shortURL;
+  if(urlDatabase[shortURL]) {
+    const longURL = urlDatabase[shortURL].longURL
+    if(!longURL) return res.status(404).send("This short URL does not exist");
+    res.redirect(longURL);
   } else {
-    const errorMessage = 'This short URL does not exist.';
-    res.status(404).render(errorMessage);
+    res.status(404).send('The short URL you are trying to access does not correspond with a long URL')
   }
 });
 
+// Sign in
 app.get('/login', (req, res) => {
-  if (req.session.userID) {
+  const userID = req.session.user_id; 
+  if (userID) {
     res.redirect('/urls');
     return;
   }
-
-  const templateVars = {user: users[req.session.userID]};
+  const templateVars = {user: userID};
   res.render('urls_login', templateVars);
 });
 
@@ -140,16 +169,21 @@ app.post("/login", (req, res) => {
   }
 });
 
+//log out
 app.post('/logout', (req, res) => {
-  req.session = null;
+  userID = req.session.user_id;
+  if (userID) {
+    req.session = null;
+  }
   res.redirect('/login');
 });
 
+// account registration
 app.get('/register', (req, res) => {
-  const id = req.session.user_id;
-  const user = id ? users[id] : null;
+  const userID = req.session.user_id;
+  const user = userID ? users[userID] : null;
   let templateVars = { user };
-  res.render("urls_registeration", templateVars);
+  res.render("urls_registration", templateVars);
 });
 
 app.post('/register', (req, res) => {
@@ -175,9 +209,14 @@ app.post('/register', (req, res) => {
   }
 });
 
-app.get("/urls/:id", function(req, res) {
-  res.render("urls_show", templateVars);
-});
+// app.post("/urls/:id", function(req, res) {
+//   const shortURL = req.params.userID;
+//   if (urlDatabase[shortURL] && req.session.userID === urlDatabase[shortURL].userID) {
+//     urlDatabase[shortURL].longURL = req.body.longURL;
+//     return res.redirect("/urls");
+//   }
+//   res.status(403).send ("you need to log in to edit URLs");
+// });
 
 app.listen(PORT, () => {
   console.log(`Example app listening on port ${PORT}!`);
